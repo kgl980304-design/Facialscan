@@ -1,0 +1,80 @@
+name: iOS Build & TestFlight
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+
+jobs:
+  build:
+    runs-on: macos-14
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Select Xcode version
+        run: |
+          ls /Applications | grep Xcode
+          sudo xcode-select -s /Applications/Xcode.app
+
+      - name: Ruby / Bundler 캐시
+        uses: ruby/setup-ruby@v1
+        with:
+          ruby-version: "3.2"
+          bundler-cache: true
+
+      - name: XcodeGen 설치
+        run: brew install xcodegen
+
+      - name: Xcode 프로젝트 생성 (project.yml -> .xcodeproj)
+        run: xcodegen generate
+
+      - name: CocoaPods 설치 (OpenCV2)
+        run: |
+          gem install cocoapods
+          pod install --repo-update
+
+      - name: 프로젝트 파일 포맷 호환성 패치 (Pods.xcodeproj)
+        run: |
+          find . -name "project.pbxproj" -not -path "./FacialScanCalib.xcodeproj/*" | while read -r f; do
+            echo "패치 대상: $f"
+            sed -i.bak -E 's|objectVersion = [0-9]+|objectVersion = 60|' "$f"
+          done
+
+      - name: App Store Connect API 키 디코딩 및 형식 변환
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
+        run: |
+          mkdir -p private_keys
+          ORIGINAL_PATH="private_keys/AuthKey_${ASC_KEY_ID}_original.p8"
+          CONVERTED_PATH="private_keys/AuthKey_${ASC_KEY_ID}.p8"
+
+          echo "ASC_KEY_CONTENT 원본 길이(공백 포함): ${#ASC_KEY_CONTENT}"
+
+          python3 -c "import base64,os; raw=os.environ['ASC_KEY_CONTENT']; data=''.join(raw.split()); print('base64 length after stripping whitespace:', len(data)); pad=len(data)%4; data=data+('='*(4-pad) if pad else ''); open('${ORIGINAL_PATH}','wb').write(base64.b64decode(data))"
+
+          echo "--- 디코딩된 파일 미리보기 (디버깅용, 키 내용은 마스킹됨) ---"
+          wc -l "${ORIGINAL_PATH}"
+          head -n 1 "${ORIGINAL_PATH}"
+          tail -n 1 "${ORIGINAL_PATH}"
+
+          openssl ec -in "${ORIGINAL_PATH}" -out "${CONVERTED_PATH}"
+          echo "ASC_KEY_FILEPATH=$(pwd)/${CONVERTED_PATH}" >> "$GITHUB_ENV"
+
+      - name: 빌드 및 TestFlight 업로드
+        env:
+          ASC_KEY_ID: ${{ secrets.ASC_KEY_ID }}
+          ASC_ISSUER_ID: ${{ secrets.ASC_ISSUER_ID }}
+          TEAM_ID: ${{ secrets.TEAM_ID }}
+          DIST_CERT_P12_BASE64: ${{ secrets.DIST_CERT_P12_BASE64 }}
+          DIST_CERT_PASSWORD: ${{ secrets.DIST_CERT_PASSWORD }}
+        run: bundle exec fastlane beta
+
+      - name: 빌드 로그 업로드 (실패 시 디버깅용)
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-logs
+          path: ~/Library/Logs/gym
