@@ -8,36 +8,52 @@ import simd
 /// 전혀 엉뚱한 곳으로 수렴해버린다. 대신 항상 "바로 직전 프레임 1장"과만 정합해서
 /// (연속 촬영이라 프레임 간 회전 차이가 작으므로 identity 초기값으로도 잘 수렴함)
 /// 그 결과를 계속 누적(chain)하는 방식을 쓴다.
+///
+/// 추가: 정합 신뢰도(inlier 비율)가 임계값보다 낮으면 "정합 실패"로 보고
+/// 그 프레임은 병합에서 아예 제외한다 (잘못된 정합이 최종 결과를 망치는 것 방지).
 enum MeshMerger {
-    static func mergeSequentially(meshes: [ScanMesh]) -> ScanMesh? {
+
+    struct MergeReport {
+        let mesh: ScanMesh
+        /// 정합 신뢰도가 낮아 병합에서 제외된 프레임 인덱스들 (0 = 첫 프레임 기준, dropFirst 이후 순번)
+        let droppedFrameIndices: [Int]
+    }
+
+    static func mergeSequentially(
+        meshes: [ScanMesh],
+        minInlierRatio: Float = 0.35
+    ) -> MergeReport? {
         guard let first = meshes.first else { return nil }
 
         var mergedVertices = first.vertices
         var mergedIndices = first.triangleIndices
 
-        // 직전 프레임의 "원본(변환 전)" 정점과, 그 프레임을 기준 좌표계로 옮기는 누적 변환
         var previousRawVertices = first.vertices
         var cumulativeTransform = ICPAligner.Transform.identity
+        var droppedIndices: [Int] = []
 
-        for mesh in meshes.dropFirst() {
-            // 직전 프레임 "자기 좌표계" 기준으로 정합하므로 회전 차이가 작아 identity로 충분
-            let relativeTransform = ICPAligner.align(
-                source: mesh.vertices,
-                target: previousRawVertices
-            )
-            // relativeTransform: 이번 프레임 -> 직전 프레임 좌표계
-            // 여기에 직전 프레임의 누적 변환을 이어 붙이면 -> 기준(첫 프레임) 좌표계로 이동
-            let globalTransform = relativeTransform.then(cumulativeTransform)
+        for (offset, mesh) in meshes.dropFirst().enumerated() {
+            let result = ICPAligner.align(source: mesh.vertices, target: previousRawVertices)
 
+            guard result.inlierRatio >= minInlierRatio else {
+                // 정합 신뢰도가 너무 낮음 -> 이 프레임은 병합에서 제외 (품질 저하 방지)
+                droppedIndices.append(offset + 1)
+                // 다음 프레임은 이 프레임을 기준으로 삼지 않고, 마지막으로 성공한 프레임 기준을 유지
+                continue
+            }
+
+            let globalTransform = result.transform.then(cumulativeTransform)
             let transformedVertices = mesh.vertices.map { globalTransform.apply($0) }
-            let offset = Int32(mergedVertices.count)
+
+            let offsetIdx = Int32(mergedVertices.count)
             mergedVertices.append(contentsOf: transformedVertices)
-            mergedIndices.append(contentsOf: mesh.triangleIndices.map { $0 + offset })
+            mergedIndices.append(contentsOf: mesh.triangleIndices.map { $0 + offsetIdx })
 
             previousRawVertices = mesh.vertices
             cumulativeTransform = globalTransform
         }
 
-        return ScanMesh(vertices: mergedVertices, triangleIndices: mergedIndices)
+        let mesh = ScanMesh(vertices: mergedVertices, triangleIndices: mergedIndices)
+        return MergeReport(mesh: mesh, droppedFrameIndices: droppedIndices)
     }
 }

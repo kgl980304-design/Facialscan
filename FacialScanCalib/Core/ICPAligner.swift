@@ -25,6 +25,12 @@ enum ICPAligner {
         }
     }
 
+    struct AlignmentResult {
+        let transform: Transform
+        /// 마지막 반복에서 대응점을 찾은 소스 점의 비율 (0~1). 낮으면 정합 신뢰도가 낮다는 뜻.
+        let inlierRatio: Float
+    }
+
     /// source 점군을 target 점군에 맞춰 정렬하는 강체 변환을 계산한다.
     /// - Parameters:
     ///   - maxIterations: ICP 반복 횟수 상한
@@ -34,16 +40,20 @@ enum ICPAligner {
         target: [SIMD3<Float>],
         maxIterations: Int = 20,
         maxCorrespondenceDistance: Float = 0.02
-    ) -> Transform {
-        guard !source.isEmpty, !target.isEmpty else { return .identity }
+    ) -> AlignmentResult {
+        guard !source.isEmpty, !target.isEmpty else {
+            return AlignmentResult(transform: .identity, inlierRatio: 0)
+        }
 
         let grid = VoxelGrid(points: target, voxelSize: max(maxCorrespondenceDistance, 0.005))
 
         var current = Transform.identity
         var prevError = Float.greatestFiniteMagnitude
+        var lastInlierRatio: Float = 0
 
         // 계산량을 줄이기 위해 소스 점을 최대 1500개 정도로 균등 샘플링
         let stride = max(1, source.count / 1500)
+        let sampledCount = max(1, source.count / stride)
 
         for _ in 0..<maxIterations {
             var srcPairs: [SIMD3<Float>] = []
@@ -64,6 +74,7 @@ enum ICPAligner {
                 i += stride
             }
 
+            lastInlierRatio = Float(srcPairs.count) / Float(sampledCount)
             guard srcPairs.count >= 10 else { break }
 
             let step = hornAlignment(source: srcPairs, target: tgtPairs)
@@ -74,7 +85,7 @@ enum ICPAligner {
             prevError = meanError
         }
 
-        return current
+        return AlignmentResult(transform: current, inlierRatio: lastInlierRatio)
     }
 
     /// Horn(1987) 닫힌 형태 해: 대응점 쌍이 주어졌을 때 최적의 강체 변환(회전+이동)을 계산.

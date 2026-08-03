@@ -35,6 +35,7 @@ struct FaceScanView: View {
 
     @StateObject private var captureController = TrueDepthCaptureController()
 
+    @State private var pendingColorImage: UIImage?
     @State private var pendingDepthBuffer: CVPixelBuffer?
     @State private var pendingCalibData: AVCameraCalibrationData?
     @State private var distanceStatus: DistanceStatus = .unknown
@@ -44,7 +45,7 @@ struct FaceScanView: View {
     @State private var stageIndex = 0
     @State private var stageElapsed: TimeInterval = 0
     @State private var captureAccumulator: TimeInterval = 0
-    @State private var capturedFrames: [(depth: CVPixelBuffer, calib: AVCameraCalibrationData?)] = []
+    @State private var capturedFrames: [(colorImage: UIImage, depth: CVPixelBuffer, calib: AVCameraCalibrationData?)] = []
     @State private var processedCount = 0
     @State private var processingPhase = ""
     @State private var errorMessage: String?
@@ -138,7 +139,8 @@ struct FaceScanView: View {
         .padding(.top)
         .onAppear {
             captureController.start()
-            captureController.onFrame = { _, depth, calib in
+            captureController.onFrame = { colorImage, depth, calib in
+                pendingColorImage = colorImage
                 pendingDepthBuffer = depth
                 pendingCalibData = calib
                 distanceStatus = DepthDistanceEstimator.estimate(depthBuffer: depth)
@@ -169,8 +171,8 @@ struct FaceScanView: View {
         // 거리가 적정 범위일 때만 캡처 (너무 가깝거나 멀면 그 순간은 건너뛰고 타임라인은 계속 진행)
         if captureAccumulator >= captureInterval {
             captureAccumulator = 0
-            if distanceStatus == .good, let depth = pendingDepthBuffer {
-                capturedFrames.append((depth: depth, calib: pendingCalibData))
+            if distanceStatus == .good, let depth = pendingDepthBuffer, let colorImage = pendingColorImage {
+                capturedFrames.append((colorImage: colorImage, depth: depth, calib: pendingCalibData))
             }
         }
 
@@ -203,7 +205,18 @@ struct FaceScanView: View {
             var perFrameURLs: [URL] = []
 
             for (index, frame) in frames.enumerated() {
-                if let mesh = DepthMeshBuilder.buildMesh(depthBuffer: frame.depth, calibrationData: frame.calib) {
+                // 얼굴 영역만 남기고 배경을 제외 (검출 실패하면 기존처럼 거리 필터만 적용)
+                let faceBox = FaceRegionDetector.detectFaceBoundingBox(in: frame.colorImage)
+                let colorPixelSize: CGSize? = frame.colorImage.cgImage.map {
+                    CGSize(width: $0.width, height: $0.height)
+                }
+
+                if let mesh = DepthMeshBuilder.buildMesh(
+                    depthBuffer: frame.depth,
+                    calibrationData: frame.calib,
+                    faceBoxInColorPixels: faceBox,
+                    colorImagePixelSize: colorPixelSize
+                ) {
                     perFrameMeshes.append(mesh)
                     let tag = String(format: "%03d", index)
                     if let url = try? STLExporter.export(mesh, fileName: "raw_frame\(tag)_\(sessionTimestamp)") {
@@ -229,13 +242,15 @@ struct FaceScanView: View {
             }
 
             var outputURLs: [URL] = []
+            var droppedCount = 0
 
-            if let merged = MeshMerger.mergeSequentially(meshes: perFrameMeshes) {
-                if let rawMergedURL = try? STLExporter.export(merged, fileName: "raw_merged_\(sessionTimestamp)") {
+            if let report = MeshMerger.mergeSequentially(meshes: perFrameMeshes) {
+                droppedCount = report.droppedFrameIndices.count
+                if let rawMergedURL = try? STLExporter.export(report.mesh, fileName: "raw_merged_\(sessionTimestamp)") {
                     outputURLs.append(rawMergedURL)
                 }
                 if let profile {
-                    let corrected = MeshCorrector.applyScaleCorrection(merged, scaleFactor: profile.scale.scaleFactor)
+                    let corrected = MeshCorrector.applyScaleCorrection(report.mesh, scaleFactor: profile.scale.scaleFactor)
                     if let correctedMergedURL = try? STLExporter.export(corrected, fileName: "corrected_merged_\(sessionTimestamp)") {
                         outputURLs.append(correctedMergedURL)
                     }
@@ -251,6 +266,9 @@ struct FaceScanView: View {
                 if outputURLs.isEmpty {
                     errorMessage = "정합에 실패했습니다. 다시 시도해주세요."
                 } else {
+                    if droppedCount > 0 {
+                        print("정합 신뢰도가 낮아 \(droppedCount)개 프레임이 최종 병합에서 제외되었습니다 (개별 프레임 STL에는 남아있음).")
+                    }
                     onFinished(outputURLs)
                 }
             }

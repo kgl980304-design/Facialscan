@@ -12,7 +12,10 @@ enum DepthMeshBuilder {
     ///   - depthBuffer: TrueDepth에서 캡처한 Float32(meter) 깊이 맵
     ///   - calibrationData: 깊이 맵과 짝을 이루는 카메라 내부 파라미터
     ///   - step: 다운샘플링 간격 (1=원본 해상도 그대로, 2=절반 해상도 -> 정점 수 1/4)
-    ///   - minDepthMeters/maxDepthMeters: 얼굴이 있을 것으로 예상하는 거리 범위 (배경 제거용)
+    ///   - minDepthMeters/maxDepthMeters: 얼굴이 있을 것으로 예상하는 거리 범위 (배경 제거 1차 필터)
+    ///   - faceBoxInColorPixels/colorImagePixelSize: Vision으로 검출한 얼굴 영역
+    ///     (원본/비회전 좌표계). 주어지면 이 영역 밖의 깊이 픽셀은 아예 사용하지 않아
+    ///     배경/손/어깨 등이 메시에 섞여 들어오는 걸 방지한다 (2차 필터, 핵심 개선).
     static func buildMesh(
         depthBuffer: CVPixelBuffer,
         calibrationData: AVCameraCalibrationData?,
@@ -21,7 +24,13 @@ enum DepthMeshBuilder {
         maxDepthMeters: Float = 0.8,
         // 인접한 두 정점 사이의 3D 거리가 이 값을 넘으면 "같은 표면"이 아니라
         // 실루엣 경계(얼굴 윤곽 vs 배경)로 보고 그 사이는 잇지 않는다.
-        maxEdgeMeters: Float = 0.012
+        maxEdgeMeters: Float = 0.012,
+        faceBoxInColorPixels: CGRect? = nil,
+        colorImagePixelSize: CGSize? = nil,
+        // 부유 노이즈 점 제거 (radius outlier removal)
+        removeOutliers: Bool = true,
+        outlierRadiusMeters: Float = 0.01,
+        outlierMinNeighbors: Int = 4
     ) -> ScanMesh? {
         guard let calib = calibrationData else { return nil }
 
@@ -44,10 +53,23 @@ enum DepthMeshBuilder {
         let cx = intrinsics.columns.2.x * scaleX
         let cy = intrinsics.columns.2.y * scaleY
 
+        // 얼굴 바운딩 박스를 컬러 이미지 좌표계 -> 깊이 맵 좌표계로 변환
+        var faceBoxInDepth: CGRect?
+        if let box = faceBoxInColorPixels, let colorSize = colorImagePixelSize,
+           colorSize.width > 0, colorSize.height > 0 {
+            let cToDx = Double(width) / Double(colorSize.width)
+            let cToDy = Double(height) / Double(colorSize.height)
+            faceBoxInDepth = CGRect(
+                x: box.minX * cToDx,
+                y: box.minY * cToDy,
+                width: box.width * cToDx,
+                height: box.height * cToDy
+            )
+        }
+
         let gridW = max(1, width / step)
         let gridH = max(1, height / step)
 
-        // 그리드 좌표 -> 실제 생성된 정점 인덱스 매핑 (유효하지 않은 픽셀은 -1)
         var indexMap = [Int32](repeating: -1, count: gridW * gridH)
         var vertices: [SIMD3<Float>] = []
         vertices.reserveCapacity(gridW * gridH)
@@ -58,6 +80,13 @@ enum DepthMeshBuilder {
             let floatPtr = rowPtr.assumingMemoryBound(to: Float32.self)
             for gx in 0..<gridW {
                 let px = gx * step
+
+                // 얼굴 바운딩 박스 밖이면 아예 건너뜀 (배경 1차 제거)
+                if let box = faceBoxInDepth,
+                   !box.contains(CGPoint(x: px, y: py)) {
+                    continue
+                }
+
                 let depth = floatPtr[px]
                 guard depth.isFinite, depth > minDepthMeters, depth < maxDepthMeters else { continue }
 
@@ -73,14 +102,26 @@ enum DepthMeshBuilder {
 
         guard !vertices.isEmpty else { return nil }
 
+        // 통계/반경 기반 outlier 제거: 주변에 이웃이 거의 없는 부유 점은 삼각형 생성에서 제외
+        let keepMask: [Bool]
+        if removeOutliers {
+            keepMask = PointCloudFilter.radiusOutlierMask(
+                points: vertices,
+                radius: outlierRadiusMeters,
+                minNeighbors: outlierMinNeighbors
+            )
+        } else {
+            keepMask = Array(repeating: true, count: vertices.count)
+        }
+
         var indices: [Int32] = []
         indices.reserveCapacity(gridW * gridH * 6)
 
-        // 두 정점 사이 거리가 maxEdgeMeters를 넘으면 깊이 불연속(실루엣 경계)으로 간주
         func edgeOK(_ a: Int32, _ b: Int32) -> Bool {
-            let va = vertices[Int(a)]
-            let vb = vertices[Int(b)]
-            return simd_distance(va, vb) <= maxEdgeMeters
+            simd_distance(vertices[Int(a)], vertices[Int(b)]) <= maxEdgeMeters
+        }
+        func valid(_ i: Int32) -> Bool {
+            i >= 0 && keepMask[Int(i)]
         }
 
         for gy in 0..<(gridH - 1) {
@@ -90,13 +131,11 @@ enum DepthMeshBuilder {
                 let i01 = indexMap[(gy + 1) * gridW + gx]
                 let i11 = indexMap[(gy + 1) * gridW + gx + 1]
 
-                // 네 모서리가 전부 유효하고, 서로 간 거리도 임계값 이내일 때만 삼각형을 만든다
-                // (배경/노이즈뿐 아니라 얼굴 윤곽선의 "커튼" 아티팩트도 여기서 걸러진다)
-                if i00 >= 0, i10 >= 0, i01 >= 0,
+                if valid(i00), valid(i10), valid(i01),
                    edgeOK(i00, i10), edgeOK(i10, i01), edgeOK(i00, i01) {
                     indices.append(contentsOf: [i00, i10, i01])
                 }
-                if i10 >= 0, i11 >= 0, i01 >= 0,
+                if valid(i10), valid(i11), valid(i01),
                    edgeOK(i10, i11), edgeOK(i11, i01), edgeOK(i10, i01) {
                     indices.append(contentsOf: [i10, i11, i01])
                 }
