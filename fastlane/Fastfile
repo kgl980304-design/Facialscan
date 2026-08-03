@@ -19,4 +19,86 @@ platform :ios do
       development: false,
       force: true,
       keychain_path: "#{lane_context[SharedValues::KEYCHAIN_PATH]}-db",
-      keychain_password: ENV
+      keychain_password: ENV["MATCH_KEYCHAIN_PASSWORD"]
+    )
+
+    keychain_path = File.expand_path("#{lane_context[SharedValues::KEYCHAIN_PATH]}-db")
+    output_path = File.join(ENV["GITHUB_WORKSPACE"] || Dir.pwd, "distribution.p12")
+
+    sh("security export -k '#{keychain_path}' -t identities -f pkcs12 " \
+       "-o '#{output_path}' -P '#{ENV['CERT_EXPORT_PASSWORD']}'")
+
+    UI.success("distribution.p12 생성 완료: #{output_path}")
+  end
+
+  desc "빌드 후 TestFlight로 업로드 (GitHub Actions macOS 러너에서 실행)"
+  lane :beta do
+    setup_ci
+
+    api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_filepath: ENV["ASC_KEY_FILEPATH"]
+    )
+
+    cert_p12_path = File.join(ENV["GITHUB_WORKSPACE"] || Dir.pwd, "distribution.p12")
+    File.open(cert_p12_path, "wb") do |f|
+      f.write(Base64.decode64(ENV["DIST_CERT_P12_BASE64"]))
+    end
+
+    keychain_path = File.expand_path("#{lane_context[SharedValues::KEYCHAIN_PATH]}-db")
+
+    import_certificate(
+      certificate_path: cert_p12_path,
+      certificate_password: ENV["DIST_CERT_PASSWORD"],
+      keychain_path: keychain_path,
+      keychain_password: ENV["MATCH_KEYCHAIN_PASSWORD"]
+    )
+
+    sigh(
+      api_key: api_key,
+      team_id: ENV["TEAM_ID"],
+      app_identifier: "com.facialscancalib.app",
+      development: false,
+      force: true,
+      provisioning_name: "FacialScanCalib AppStore CI"
+    )
+
+    increment_build_number(
+      build_number: ENV["GITHUB_RUN_NUMBER"] || Time.now.to_i.to_s,
+      xcodeproj: "FacialScanCalib.xcodeproj"
+    )
+
+    build_app(
+      workspace: "FacialScanCalib.xcworkspace",
+      scheme: "FacialScanCalib",
+      configuration: "Release",
+      export_method: "app-store",
+      xcargs: "DEVELOPMENT_TEAM=#{ENV['TEAM_ID']} PROVISIONING_PROFILE_SPECIFIER=\"#{lane_context[SharedValues::SIGH_NAME]}\""
+    )
+
+    upload_api_key = app_store_connect_api_key(
+      key_id: ENV["ASC_KEY_ID"],
+      issuer_id: ENV["ASC_ISSUER_ID"],
+      key_content: File.read(ENV["ASC_KEY_FILEPATH"]),
+      is_key_content_base64: false
+    )
+
+    upload_to_testflight(
+      api_key: upload_api_key,
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+  end
+
+  desc "빌드만 하고 .ipa를 아티팩트로 남김 (TestFlight 없이 임시 배포용)"
+  lane :adhoc_build do
+    build_app(
+      workspace: "FacialScanCalib.xcworkspace",
+      scheme: "FacialScanCalib",
+      export_method: "development",
+      xcargs: "-allowProvisioningUpdates DEVELOPMENT_TEAM=#{ENV['TEAM_ID']}",
+      output_directory: "build"
+    )
+  end
+end
