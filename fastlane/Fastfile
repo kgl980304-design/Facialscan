@@ -22,7 +22,7 @@ platform :ios do
       keychain_password: ENV["MATCH_KEYCHAIN_PASSWORD"]
     )
 
-    keychain_path = "#{lane_context[SharedValues::KEYCHAIN_PATH]}-db"
+    keychain_path = File.expand_path("#{lane_context[SharedValues::KEYCHAIN_PATH]}-db")
     output_path = File.join(ENV["GITHUB_WORKSPACE"] || Dir.pwd, "distribution.p12")
 
     sh("security export -k '#{keychain_path}' -t identities -f pkcs12 " \
@@ -41,9 +41,6 @@ platform :ios do
       key_filepath: ENV["ASC_KEY_FILEPATH"]
     )
 
-    # Distribution 인증서는 Apple 계정당 개수 제한이 있어서 매번 새로
-    # 만들면 금방 한도를 초과한다. bootstrap_cert lane으로 미리 만들어
-    # GitHub Secret에 저장해둔 .p12를 그대로 불러와 재사용한다.
     cert_p12_path = File.join(ENV["GITHUB_WORKSPACE"] || Dir.pwd, "distribution.p12")
     File.open(cert_p12_path, "wb") do |f|
       f.write(Base64.decode64(ENV["DIST_CERT_P12_BASE64"]))
