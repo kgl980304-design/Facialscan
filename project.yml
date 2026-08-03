@@ -21,7 +21,7 @@ targets:
       properties:
         CFBundleDisplayName: "FacialScanCalib"
         NSCameraUsageDescription: "안면 스캔 및 체커보드 교정을 위해 카메라 접근이 필요합니다."
-        UIRequiredDeviceCapabilities: [arm64, arkit]
+        UIRequiredDeviceCapabilities: [arm64]
         UILaunchScreen: {}
         UISupportedInterfaceOrientations:
           - UIInterfaceOrientationPortrait
