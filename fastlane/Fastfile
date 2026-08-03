@@ -46,10 +46,12 @@ platform :ios do
       f.write(Base64.decode64(ENV["DIST_CERT_P12_BASE64"]))
     end
 
+    keychain_path = File.expand_path("#{lane_context[SharedValues::KEYCHAIN_PATH]}-db")
+
     import_certificate(
       certificate_path: cert_p12_path,
       certificate_password: ENV["DIST_CERT_PASSWORD"],
-      keychain_path: "#{lane_context[SharedValues::KEYCHAIN_PATH]}-db",
+      keychain_path: keychain_path,
       keychain_password: ENV["MATCH_KEYCHAIN_PASSWORD"]
     )
 
