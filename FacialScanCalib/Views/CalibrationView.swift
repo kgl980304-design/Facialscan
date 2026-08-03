@@ -94,7 +94,7 @@ struct CalibrationView: View {
             captureController.start()
             captureController.onFrame = { image, depth, calib in
                 pendingColorImage = image
-                pendingDepthBuffer = depth
+                pendingDepthBuffer = CVPixelBufferCopy.copy(depth) ?? depth
                 pendingCalibData = calib
             }
         }

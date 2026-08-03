@@ -190,13 +190,18 @@ struct FaceScanView: View {
         if captureAccumulator >= captureInterval {
             captureAccumulator = 0
             // ARKit 추적이 정상이고 거리도 적정일 때만 캡처 (품질 낮은 프레임 자동 제외)
+            // 중요: CVPixelBuffer는 재사용되는 풀에서 나오므로, 나중에 처리하기 위해
+            // 저장해두려면 반드시 이 시점에 깊은 복사를 해야 한다. 참조만 저장하면
+            // 나중에 처리할 때 이미 다른 프레임 데이터로 덮어써진 상태가 된다.
             if distanceStatus == .good,
                captureController.trackingQuality.isUsable,
                let depth = pendingDepthBuffer,
                let transform = pendingWorldTransform,
-               let colorBuffer = pendingColorBuffer {
+               let colorBuffer = pendingColorBuffer,
+               let depthCopy = CVPixelBufferCopy.copy(depth),
+               let colorCopy = CVPixelBufferCopy.copy(colorBuffer) {
                 capturedFrames.append(CapturedFrame(
-                    depth: depth, worldTransform: transform, calib: pendingCalibData, colorBuffer: colorBuffer
+                    depth: depthCopy, worldTransform: transform, calib: pendingCalibData, colorBuffer: colorCopy
                 ))
             }
         }

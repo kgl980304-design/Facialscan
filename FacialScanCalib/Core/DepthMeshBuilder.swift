@@ -31,7 +31,9 @@ enum DepthMeshBuilder {
         // ARKit이 추적한 카메라 world transform. 주어지면 이 프레임의 점들을
         // 카메라 로컬 좌표가 아니라 ARKit의 공통 world 좌표계로 바로 배치한다.
         // (여러 프레임을 합칠 때 이 값이 있으면 별도 정합 없이 그대로 이어붙이면 된다)
-        worldTransform: simd_float4x4? = nil
+        worldTransform: simd_float4x4? = nil,
+        // Apple 팩토리 렌즈 왜곡 보정 테이블 적용 여부 (체커보드 없이 쓸 수 있는 대안 보정)
+        applyLensDistortionCorrection: Bool = true
     ) -> ScanMesh? {
         guard let calib = calibrationData else { return nil }
 
@@ -91,8 +93,25 @@ enum DepthMeshBuilder {
                 let depth = floatPtr[px]
                 guard depth.isFinite, depth > minDepthMeters, depth < maxDepthMeters else { continue }
 
-                let x = (Float(px) - cx) / fx * depth
-                let y = (Float(py) - cy) / fy * depth
+                var correctedPx = Float(px)
+                var correctedPy = Float(py)
+                if applyLensDistortionCorrection {
+                    // lensDistortionLookupTable/opticalCenter는 calibrationData의 기준
+                    // 해상도(refDim, 보통 컬러 이미지 해상도) 기준이므로, 깊이 맵 좌표를
+                    // 잠시 그 기준으로 되돌려서 보정한 뒤 다시 깊이 맵 좌표로 되돌린다.
+                    let refPx = Float(px) / scaleX
+                    let refPy = Float(py) / scaleY
+                    let corrected = LensDistortionCorrector.correct(
+                        point: CGPoint(x: CGFloat(refPx), y: CGFloat(refPy)),
+                        calibrationData: calib,
+                        imageSize: refDim
+                    )
+                    correctedPx = Float(corrected.x) * scaleX
+                    correctedPy = Float(corrected.y) * scaleY
+                }
+
+                let x = (correctedPx - cx) / fx * depth
+                let y = (correctedPy - cy) / fy * depth
                 let cameraLocalPoint = SIMD3<Float>(x, y, depth)
 
                 let vertex: SIMD3<Float>
