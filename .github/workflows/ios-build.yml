@@ -48,8 +48,8 @@ jobs:
           ASC_KEY_CONTENT: ${{ secrets.ASC_KEY_CONTENT }}
         run: |
           mkdir -p private_keys
-          ORIGINAL_PATH="private_keys/AuthKey_${ASC_KEY_ID}_original.p8"
-          CONVERTED_PATH="private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          ORIGINAL_PATH="private_keys/AuthKey_${ASC_KEY_ID}.p8"
+          CONVERTED_PATH="private_keys/AuthKey_${ASC_KEY_ID}_sec1.p8"
 
           echo "ASC_KEY_CONTENT 원본 길이(공백 포함): ${#ASC_KEY_CONTENT}"
 
