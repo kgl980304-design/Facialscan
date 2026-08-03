@@ -11,6 +11,8 @@ final class CalibrationManager: ObservableObject {
     @Published var isCalibrating = false
     @Published var resultProfile: CalibrationProfile?
     @Published var statusMessage = "체커보드를 화면 중앙에 위치시키고 캡처하세요."
+    /// 실제로 코너가 검출된 사진 (초록 점 표시) - "진짜로 인식하고 있다"는 걸 눈으로 확인시켜줌
+    @Published var lastAnnotatedImage: UIImage?
 
     let pattern: CheckerboardPattern
     let requiredFrameCount: Int
@@ -46,6 +48,7 @@ final class CalibrationManager: ObservableObject {
         let points = detection.corners.map { $0.cgPointValue }
         collectedCorners.append(points)
         capturedFrameCount = collectedCorners.count
+        lastAnnotatedImage = Self.annotate(image: colorImage, corners: points)
 
         // 인접 코너 간 실측 거리(깊이 기반)를 샘플링해서 스케일 보정에 사용
         if let mm = Self.measureAdjacentSquareSizeMM(
@@ -131,7 +134,26 @@ final class CalibrationManager: ObservableObject {
         scaleSamplesMM.removeAll()
         capturedFrameCount = 0
         resultProfile = nil
+        lastAnnotatedImage = nil
         statusMessage = "체커보드를 화면 중앙에 위치시키고 캡처하세요."
+    }
+
+    /// 검출된 코너 위치에 초록 점을 찍어서, "실제로 이 좌표들을 인식했다"는 걸 눈으로 보여준다.
+    private static func annotate(image: UIImage, corners: [CGPoint]) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: image.size)
+        return renderer.image { ctx in
+            image.draw(at: .zero)
+            let cg = ctx.cgContext
+            cg.setFillColor(UIColor.systemGreen.cgColor)
+            cg.setStrokeColor(UIColor.white.cgColor)
+            cg.setLineWidth(2)
+            let radius: CGFloat = max(6, image.size.width * 0.01)
+            for p in corners {
+                let rect = CGRect(x: p.x - radius, y: p.y - radius, width: radius * 2, height: radius * 2)
+                cg.fillEllipse(in: rect)
+                cg.strokeEllipse(in: rect)
+            }
+        }
     }
 
     /// 검출된 코너 그리드에서 가로 방향 인접 코너 쌍들의 실제 3D 거리를 depth map으로 계산.

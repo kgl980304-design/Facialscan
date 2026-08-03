@@ -50,7 +50,7 @@ struct FaceScanView: View {
     @State private var errorMessage: String?
 
     // 캡처 간격: 짧을수록 프레임이 촘촘해서 정합하기 쉽지만 파일 수/처리 시간이 늘어난다.
-    private let captureInterval: TimeInterval = 0.35
+    private let captureInterval: TimeInterval = 0.5
     private let tickTimer = Timer.publish(every: 0.1, on: .main, in: .common).autoconnect()
 
     private var currentStage: ScanStage { ScanStage.allCases[stageIndex] }

@@ -16,7 +16,7 @@ enum DepthMeshBuilder {
     static func buildMesh(
         depthBuffer: CVPixelBuffer,
         calibrationData: AVCameraCalibrationData?,
-        step: Int = 2,
+        step: Int = 4,
         minDepthMeters: Float = 0.15,
         maxDepthMeters: Float = 0.8,
         // 인접한 두 정점 사이의 3D 거리가 이 값을 넘으면 "같은 표면"이 아니라
