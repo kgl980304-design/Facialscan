@@ -2,7 +2,7 @@ name: FacialScanCalib
 options:
   bundleIdPrefix: com.facialscancalib
   deploymentTarget:
-    iOS: "15.0"
+    iOS: "16.0"
   createIntermediateGroups: true
   postGenCommand: sed -i.bak -E 's|objectVersion = [0-9]+|objectVersion = 60|' FacialScanCalib.xcodeproj/project.pbxproj
 
