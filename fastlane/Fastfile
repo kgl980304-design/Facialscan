@@ -73,3 +73,25 @@ platform :ios do
       workspace: "FacialScanCalib.xcworkspace",
       scheme: "FacialScanCalib",
       configuration: "Release",
+      export_method: "app-store",
+      xcargs: "DEVELOPMENT_TEAM=#{ENV['TEAM_ID']} PROVISIONING_PROFILE_SPECIFIER=\"#{lane_context[SharedValues::SIGH_NAME]}\""
+    )
+
+    upload_to_testflight(
+      api_key: api_key,
+      skip_waiting_for_build_processing: true,
+      distribute_external: false
+    )
+  end
+
+  desc "빌드만 하고 .ipa를 아티팩트로 남김 (TestFlight 없이 임시 배포용)"
+  lane :adhoc_build do
+    build_app(
+      workspace: "FacialScanCalib.xcworkspace",
+      scheme: "FacialScanCalib",
+      export_method: "development",
+      xcargs: "-allowProvisioningUpdates DEVELOPMENT_TEAM=#{ENV['TEAM_ID']}",
+      output_directory: "build"
+    )
+  end
+end
